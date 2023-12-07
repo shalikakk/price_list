@@ -1,0 +1,1 @@
+enum Market {Pettah, Dambulla, Narahenpita}
