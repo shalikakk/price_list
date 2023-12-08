@@ -1,5 +1,11 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_pdfview/flutter_pdfview.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:price_list/model/item_model.dart';
 import 'package:price_list/model/market_list.dart';
 import 'package:price_list/model/price_model.dart';
@@ -30,16 +36,6 @@ class MyApp extends StatelessWidget {
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   final String title;
 
   @override
@@ -47,11 +43,13 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-  TextEditingController mycontroller = TextEditingController();
+  Dio _dio = Dio();
+  double _progress = 0;
+  bool _downloading = false;
+  late String _pdfPath;
 
-List<String> itemNameList = ["Beans","Carrot","Cabbage","Tomato","Brinjal","Pumpkin","Snake gourd","Green Chilli"];
-List<Item> itemList = [];
+  List<String> itemNameList = ["Beans","Carrot","Cabbage","Tomato","Brinjal","Pumpkin","Snake gourd","Green Chilli"];
+  List<Item> itemList = [];
   Future<void> _extractAllText() async {
     //Load the existing PDF document.
     PdfDocument document =
@@ -73,39 +71,152 @@ List<Item> itemList = [];
     return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
   }
 
+
   @override
-  Widget build(BuildContext context) {
+  void initState() {
+    super.initState();
+    requestPermissions();
+  }
 
-    return DefaultTabController(
+  // Function to request read and write permissions
+  Future<void> requestPermissions() async {
+    var status = await Permission.storage.status;
+    if (status.isDenied) {
+      await Permission.storage.request();
+    }
+  }
 
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          backgroundColor: Theme
-              .of(context)
-              .colorScheme
-              .inversePrimary,
-          title: Text("Price List"),
-          bottom: const TabBar(
-            tabs: [
-              Tab(child: Text("Retail"),),
-              Tab(child: Text("Wholesale"),),
-            ],
+  Future<void> _openPdf() async {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(
+            title: Text('PDF Viewer'),
+          ),
+          body: PDFView(
+            filePath: _pdfPath,
+            enableSwipe: true,
+            swipeHorizontal: true,
+            autoSpacing: false,
+            pageFling: false,
+            pageSnap: false,
+            defaultPage: 0,
+            fitPolicy: FitPolicy.WIDTH,
+            onRender: (pages) {
+              print("PDF Rendered");
+            },
+            onError: (error) {
+              print("Error during PDF rendering: $error");
+            },
+            onPageError: (page, error) {
+              print("Error during page $page rendering: $error");
+            },
           ),
         ),
-        body:  TabBarView(
-          children: [
-            RetailItemPage(itemList: itemList),
-            WholesaleItemPage(itemList: itemList),
-          ],
-        ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: _extractAllText,
-          tooltip: 'Increment',
-          child: const Icon(Icons.add),
-        ), // This trailing comma makes auto-formatting nicer for build methods.
       ),
     );
+  }
+
+
+
+  Future<void> _downloadFile() async {
+    setState(() {
+      _downloading = true;
+      _progress = 0;
+    });
+
+    try {
+      // Check and request WRITE_EXTERNAL_STORAGE permission
+      var status = await Permission.storage.request();
+      if (status.isGranted) {
+        Response response = await _dio.download(
+          'https://www.cbsl.gov.lk/sites/default/files/cbslweb_documents/statistics/pricerpt/price_report_20231207_e.pdf',
+          await _getDownloadPath(),
+          onReceiveProgress: (received, total) {
+            if (total != -1) {
+              setState(() {
+                _progress = received / total;
+              });
+            }
+          },
+        );
+
+        print('Download complete: ${response.data}');
+
+        setState(() {
+          _pdfPath = response.data;
+        });
+
+        _openPdf();
+      } else {
+        print('Permission denied');
+      }
+    } catch (e) {
+      print('Error during download: $e');
+    } finally {
+      setState(() {
+        _downloading = false;
+      });
+    }
+  }
+
+
+  Future<String> _getDownloadPath() async {
+    Directory appDocDir = await getApplicationDocumentsDirectory();
+    String appDocPath = appDocDir.path;
+    return '$appDocPath/downloaded_file.pdf';
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('PDF Download'),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (_downloading)
+              Text('Downloading... ${(100 * _progress).toStringAsFixed(2)}%'),
+            ElevatedButton(
+              onPressed: _downloading ? null : _downloadFile,
+              child: Text('Download PDF'),
+            ),
+          ],
+        ),
+      ),
+    );
+    // return DefaultTabController(
+    //   length: 2,
+    //   child: Scaffold(
+    //     appBar: AppBar(
+    //       backgroundColor: Theme
+    //           .of(context)
+    //           .colorScheme
+    //           .inversePrimary,
+    //       title: Text("Price List"),
+    //       bottom: const TabBar(
+    //         tabs: [
+    //           Tab(child: Text("Retail"),),
+    //           Tab(child: Text("Wholesale"),),
+    //         ],
+    //       ),
+    //     ),
+    //     body:  TabBarView(
+    //       children: [
+    //         RetailItemPage(itemList: itemList),
+    //         WholesaleItemPage(itemList: itemList),
+    //       ],
+    //     ),
+    //     floatingActionButton: FloatingActionButton(
+    //       onPressed: _extractAllText,
+    //       tooltip: 'Increment',
+    //       child: const Icon(Icons.add),
+    //     ), // This trailing comma makes auto-formatting nicer for build methods.
+    //   ),
+    // );
   }
 
   Widget listItemBuilder(Item item){
@@ -257,8 +368,6 @@ List<Item> itemList = [];
       });
       print(itemList);
     }
-    mycontroller.text = text4.split("Carrot").first;
-
 
 
     FocusManager.instance.primaryFocus?.unfocus();
