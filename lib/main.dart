@@ -1,6 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:dio/dio.dart';
+import 'dart:convert' as convert;
+import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:path_provider/path_provider.dart';
@@ -48,13 +52,22 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _downloading = false;
   late String _pdfPath;
 
+  double progress = 0;
+
+  // Track if the PDF was downloaded here.
+  bool didDownloadPDF = false;
+
+  // Show the progress status to the user.
+  String progressString = 'File has not been downloaded yet.';
+
+
   List<String> itemNameList = ["Beans","Carrot","Cabbage","Tomato","Brinjal","Pumpkin","Snake gourd","Green Chilli"];
   List<Item> itemList = [];
-  Future<void> _extractAllText() async {
+  Future<void> _extractAllText(File file) async {
     //Load the existing PDF document.
     PdfDocument document =
     PdfDocument(
-        inputBytes: await _readDocumentData('price_report_20231130.pdf'));
+        inputBytes: await _readDocumentData(file));
 
     //Create the new instance of the PdfTextExtractor.
     PdfTextExtractor extractor = PdfTextExtractor(document);
@@ -66,8 +79,8 @@ class _MyHomePageState extends State<MyHomePage> {
     _showResult(text);
   }
 
-  Future<List<int>> _readDocumentData(String name) async {
-    final ByteData data = await rootBundle.load('assets/$name');
+  Future<List<int>> _readDocumentData(File file) async {
+    final  data = await file.readAsBytes();
     return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
   }
 
@@ -75,97 +88,85 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
-    requestPermissions();
-  }
-
-  // Function to request read and write permissions
-  Future<void> requestPermissions() async {
-    var status = await Permission.storage.status;
-    if (status.isDenied) {
-      await Permission.storage.request();
-    }
-  }
-
-  Future<void> _openPdf() async {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => Scaffold(
-          appBar: AppBar(
-            title: Text('PDF Viewer'),
-          ),
-          body: PDFView(
-            filePath: _pdfPath,
-            enableSwipe: true,
-            swipeHorizontal: true,
-            autoSpacing: false,
-            pageFling: false,
-            pageSnap: false,
-            defaultPage: 0,
-            fitPolicy: FitPolicy.WIDTH,
-            onRender: (pages) {
-              print("PDF Rendered");
-            },
-            onError: (error) {
-              print("Error during PDF rendering: $error");
-            },
-            onPageError: (page, error) {
-              print("Error during page $page rendering: $error");
-            },
-          ),
-        ),
-      ),
-    );
   }
 
 
 
-  Future<void> _downloadFile() async {
-    setState(() {
-      _downloading = true;
-      _progress = 0;
-    });
-
+  Future<bool> saveFile(String url, String fileName) async {
     try {
-      // Check and request WRITE_EXTERNAL_STORAGE permission
-      var status = await Permission.storage.request();
-      if (status.isGranted) {
-        Response response = await _dio.download(
-          'https://www.cbsl.gov.lk/sites/default/files/cbslweb_documents/statistics/pricerpt/price_report_20231207_e.pdf',
-          await _getDownloadPath(),
-          onReceiveProgress: (received, total) {
-            if (total != -1) {
-              setState(() {
-                _progress = received / total;
-              });
-            }
-          },
-        );
+      //if (await _requestPermission(Permission.storage)) {
+        Directory? directory;
+        directory = await getExternalStorageDirectory();
+        String newPath = "";
+        List<String> paths = directory!.path.split("/");
+        for (int x = 1; x < paths.length; x++) {
+          String folder = paths[x];
+          if (folder != "Android") {
+            newPath += "/" + folder;
+          } else {
+            break;
+          }
+        }
+        newPath = newPath + "/PDF_Download";
+        directory = Directory(newPath);
 
-        print('Download complete: ${response.data}');
+        File saveFile = File(directory.path + "/$fileName");
 
-        setState(() {
-          _pdfPath = response.data;
-        });
+          print(saveFile.path);
 
-        _openPdf();
-      } else {
-        print('Permission denied');
-      }
+        if (!await directory.exists()) {
+          await directory.create(recursive: true);
+        }
+        if (await directory.exists()) {
+          await Dio().download(
+            url,
+            saveFile.path,
+          );
+        }
+      //}
+      return true;
     } catch (e) {
-      print('Error during download: $e');
-    } finally {
-      setState(() {
-        _downloading = false;
-      });
+      return false;
     }
   }
 
 
-  Future<String> _getDownloadPath() async {
-    Directory appDocDir = await getApplicationDocumentsDirectory();
-    String appDocPath = appDocDir.path;
-    return '$appDocPath/downloaded_file.pdf';
+
+  Future download(Dio dio, String url, String savePath) async {
+    try {
+      Response response = await dio.get(
+        url,
+        onReceiveProgress: updateProgress,
+        options: Options(
+            responseType: ResponseType.bytes,
+            followRedirects: false,
+            validateStatus: (status) { return status! < 500; }
+        ),
+      );
+      var file = File(savePath).openSync(mode: FileMode.write);
+      file.writeFromSync(response.data);
+      await file.close();
+
+      // Here, you're catching an error and printing it. For production
+      // apps, you should display the warning to the user and give them a
+      // way to restart the download.
+    } catch (e) {
+      print(e);
+    }
   }
+
+  void updateProgress(done, total) {
+    progress = done / total;
+    setState(() {
+      if (progress >= 1) {
+        progressString = '✅ File has finished downloading. Try opening the file.';
+        didDownloadPDF = true;
+      } else {
+        progressString = 'Download progress: ' + (progress * 100).toStringAsFixed(0) + '% done.';
+      }
+    });
+  }
+
 
 
   @override
@@ -181,8 +182,58 @@ class _MyHomePageState extends State<MyHomePage> {
             if (_downloading)
               Text('Downloading... ${(100 * _progress).toStringAsFixed(2)}%'),
             ElevatedButton(
-              onPressed: _downloading ? null : _downloadFile,
-              child: Text('Download PDF'),
+                onPressed: () async {
+
+                    if (Platform.isIOS || Platform.isAndroid) {
+                      bool status = await Permission.storage.isGranted;
+
+                      if (!status) await Permission.storage.request();
+                    }
+
+
+
+
+                  // String path = await FileSaver.instance.saveFile(
+                  //     name:  "File",
+                  //     //link:  linkController.text,
+                  //     bytes: Uint8List.fromList(excel.encode()!),
+                  //     ext: '.pdf',
+                  //
+                  //     ///extController.text,
+                  //     mimeType: MimeType.pdf);
+                  //print(path);
+                },
+                child: const Text("Save File")),
+
+            TextButton(
+              // Here, you download and store the PDF file in the temporary
+              // directory.
+              
+              onPressed: didDownloadPDF ? null : () async {
+                var tempDir = await getTemporaryDirectory();
+                download(Dio(), "https://www.cbsl.gov.lk/sites/default/files/cbslweb_documents/statistics/pricerpt/price_report_20231208.pdf", tempDir.path + "/TETSTTT.pdf");
+              },
+              child: Text('Download a PDF file'),
+            ),
+            Text(
+              progressString,
+            ),
+            TextButton(
+              // Disable the button if no PDF is downloaded yet. Once the
+              // PDF file is downloaded, you can then open it using PSPDFKit.
+              // onPressed: !didDownloadPDF ? null : () async {
+              //   var tempDir = await getTemporaryDirectory();
+              //   _extractAllText(tempDir.path+"/TETSTTT.pdf");
+              //   ///data/data/com.shalika.price_list/cache/TETSTTT.pdf
+              //   print(tempDir.path + "/TETSTTT");
+              // },
+              onPressed: () async {
+                const url =
+                    "http://www.africau.edu/images/default/sample.pdf";
+                final file = await loadPdfFromNetwork(url);
+                _extractAllText(file);
+              },
+              child: Text('Open the downloaded file using PSPDFKit'),
             ),
           ],
         ),
@@ -218,6 +269,23 @@ class _MyHomePageState extends State<MyHomePage> {
     //   ),
     // );
   }
+
+  Future<File> loadPdfFromNetwork(String url) async {
+    final response = await http.get(Uri.parse(url));
+    final bytes = response.bodyBytes;
+    return _storeFile(url, bytes);
+  }
+
+  Future<File> _storeFile(String url, List<int> bytes) async {
+
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/price.pdf');
+    await file.writeAsBytes(bytes, flush: true);
+
+      print('$file');
+    return file;
+  }
+
 
   Widget listItemBuilder(Item item){
     return Card(
